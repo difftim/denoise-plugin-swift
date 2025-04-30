@@ -49,7 +49,7 @@ ARCHS=(
 SDKS=(
     "iphoneos"        # ios
     "iphonesimulator" # ios-simulator
-    "macosx" # macos
+    "macosx"          # macos
     # "maccatalyst" # maccatalyst
     # "appletvos" # tvos
     # "appletvsimulator" # tvos-simulator
@@ -92,7 +92,9 @@ build_rnnoise() {
     fi
 
     # 清理旧文件
+    cd $RNNOISE_DIR
     git clean -f -d $RNNOISE_DIR
+    cd $BUILD_DIR
 
     # 配置
     $RNNOISE_DIR/autogen.sh
@@ -124,10 +126,12 @@ build_rnnoise() {
         fi
     fi
 
+    cd $RNNOISE_DIR
     git clean -f -d $RNNOISE_DIR
-    rm -rf $BUILD_DIR
+    cd $BUILD_DIR
 
     cd "$SCRIPT_DIR"
+    rm -rf $BUILD_DIR
 }
 
 combine_framework_archs() {
