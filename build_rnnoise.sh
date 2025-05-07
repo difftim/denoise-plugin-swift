@@ -79,6 +79,7 @@ build_rnnoise() {
     export CXX="$(xcrun --sdk $SDK --find clang++)"
     export CFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path) -I$RNNOISE_DIR/include -DRNNOISE_EXPORT=''"
     export LDFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path)"
+    export PLATFORM=$PLATFORM
 
     # 添加 Bitcode 支持
     if [ $ENABLE_BITCODE -eq 1 ]; then

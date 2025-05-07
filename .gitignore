@@ -23,3 +23,5 @@ node_modules
 .DS_Store
 .npmrc
 libs
+.build
+Package.resolved
