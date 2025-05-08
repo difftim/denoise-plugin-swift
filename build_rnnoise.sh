@@ -77,8 +77,18 @@ build_rnnoise() {
     # 设置编译工具链
     export CC="$(xcrun --sdk $SDK --find clang)"
     export CXX="$(xcrun --sdk $SDK --find clang++)"
-    export CFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path) -I$RNNOISE_DIR/include -DRNNOISE_EXPORT=''"
-    export LDFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path)"
+
+    # 设置最低版本支持
+    if [ "$PLATFORM" = "ios" ]; then
+        MIN_VERSION_FLAG="-miphoneos-version-min=13.0"
+    elif [ "$PLATFORM" = "ios-simulator" ]; then
+        MIN_VERSION_FLAG="-miphonesimulator-version-min=13.0"
+    elif [ "$PLATFORM" = "macos" ]; then
+        MIN_VERSION_FLAG="-mmacosx-version-min=10.15"
+    fi
+
+    export CFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path) -I$RNNOISE_DIR/include -DRNNOISE_EXPORT='' $MIN_VERSION_FLAG"
+    export LDFLAGS="-arch $ARCH -isysroot $(xcrun --sdk $SDK --show-sdk-path) $MIN_VERSION_FLAG"
     export PLATFORM=$PLATFORM
 
     # 添加 Bitcode 支持
