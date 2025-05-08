@@ -25,8 +25,8 @@ let package = Package(
             // for local
             // path: "libs/RNNoise.xcframework"
 
-            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.3/RNNoise.xcframework.zip",
-            checksum: "7c9580e3235a0a494bf851477f0f5652fbf2380bcc320f4d20927712fc2d03a0"
+            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.4/RNNoise.xcframework.zip",
+            checksum: "6cc46b124fbc7a091e8ba8dcc02023d1a0742356ef68c3e197df71f08385a50b"
         ),
         .target(
             name: "DenoisePluginFilter",
