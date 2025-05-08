@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 import LiveKit
@@ -13,6 +14,8 @@ public class DenoisePluginFilter {
 
     private struct State {
         var isEnabled: Bool = true
+        var supportSampleRateHz: Int = 48000
+        var supportChannels: Int = 1
         var sampleRateHz: Int?
         var channels: Int?
         var debugLog: Bool = false
@@ -55,7 +58,10 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
             rnn = nil
 
             rnn = RNNoiseWrapper()
-            rnn?.initialize(Int32(sampleRateHz), numChannels: Int32(channels))
+            rnn?.initialize(
+                Int32(_state.supportSampleRateHz),
+                numChannels: Int32(_state.supportChannels)
+            )
 
             if _state.debugLog {
                 print(
@@ -72,20 +78,66 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
             return
         }
 
-        for channel in 0..<audioBuffer.channels {
-            let vad = rnn?.process(
-                withBands: Int32(audioBuffer.bands),
-                frames: Int32(audioBuffer.frames),
-                bufferSize: Int32(audioBuffer.framesPerBand),
-                buffer: audioBuffer.rawBuffer(forChannel: channel)
-            )
+        var vads: [Float] = Array(repeating: 0.0, count: audioBuffer.channels)
+        let needResample: Bool =
+            _state.sampleRateHz != _state.supportSampleRateHz
 
+        defer {
             if _state.debugLog && _state.vadLogs {
                 print(
-                    "DenoisePluginFilter: process: channel=\(channel), withBands=\(audioBuffer.bands), frames=\(audioBuffer.frames), bufferSize=\(audioBuffer.framesPerBand), vad=\(vad)"
+                    "DenoisePluginFilter: resample&process: channels=\(audioBuffer.channels), withBands=\(audioBuffer.bands), frames=\(audioBuffer.frames), bufferSize=\(audioBuffer.framesPerBand), vads=\(vads)"
                 )
             }
         }
+
+        if needResample {
+            guard
+                let processBuffer = audioBuffer.toAVAudioPCMBufferFloat()?
+                    .resample(toSampleRate: Double(_state.supportSampleRateHz)),
+                processBuffer.floatChannelData != nil
+            else {
+                return
+            }
+
+            for channel in 0..<audioBuffer.channels {
+                guard
+                    let floatPointer: UnsafeMutablePointer<Float> =
+                        processBuffer.floatChannelData?[channel]
+                else {
+                    return
+                }
+
+                vads[channel] =
+                    (rnn?.process(
+                        withBands: Int32(3),
+                        frames: Int32(480),
+                        bufferSize: Int32(160),
+                        buffer: floatPointer
+                    ))!
+            }
+
+            guard
+                let afterProcessBuffer = processBuffer.resample(
+                    toSampleRate: Double(_state.sampleRateHz!)
+                )
+            else {
+                return
+            }
+
+            audioBuffer.rewriteByAVAudioPCMBuffer(buffer: afterProcessBuffer)
+
+        } else {
+            for channel in 0..<audioBuffer.channels {
+                vads[channel] =
+                    (rnn?.process(
+                        withBands: Int32(audioBuffer.bands),
+                        frames: Int32(audioBuffer.frames),
+                        bufferSize: Int32(audioBuffer.framesPerBand),
+                        buffer: audioBuffer.rawBuffer(forChannel: channel)
+                    ))!
+            }
+        }
+
     }
 
     public func audioProcessingRelease() {
@@ -93,5 +145,64 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
             print("DenoisePluginFilter: release: rnn=\(rnn)")
         }
         rnn = nil
+    }
+}
+
+extension LKAudioBuffer {
+    @objc
+    public func toAVAudioPCMBufferFloat() -> AVAudioPCMBuffer? {
+        guard
+            let audioFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Double(frames * 100),
+                channels: AVAudioChannelCount(channels),
+                interleaved: false
+            ),
+            let pcmBuffer = AVAudioPCMBuffer(
+                pcmFormat: audioFormat,
+                frameCapacity: AVAudioFrameCount(frames)
+            )
+        else { return nil }
+
+        pcmBuffer.frameLength = AVAudioFrameCount(frames)
+
+        guard let targetBufferPointer = pcmBuffer.floatChannelData else {
+            return nil
+        }
+
+        for i in 0..<channels {
+            let sourceBuffer = rawBuffer(forChannel: i)
+            let targetBuffer = targetBufferPointer[i]
+            // sourceBuffer is in the format of [Int16] but is stored in 32-bit alignment, we need to pack the Int16 data correctly.
+
+            for frame in 0..<frames {
+                // Cast and pack the source 32-bit Int16 data into the target 16-bit buffer
+                let clampedValue = max(
+                    Float(Int16.min),
+                    min(Float(Int16.max), sourceBuffer[frame])
+                )
+                targetBuffer[frame] = sourceBuffer[frame]
+            }
+        }
+
+        return pcmBuffer
+    }
+
+    @objc
+    public func rewriteByAVAudioPCMBuffer(buffer: AVAudioPCMBuffer) {
+        guard let targetBufferPointer = buffer.floatChannelData else {
+            return
+        }
+
+        for i in 0..<channels {
+            let sourceBuffer: UnsafeMutablePointer<Float> =
+                (buffer.floatChannelData?[i])!
+            let targetBuffer = rawBuffer(forChannel: i)
+            // sourceBuffer is in the format of [Int16] but is stored in 32-bit alignment, we need to pack the Int16 data correctly.
+
+            for frame in 0..<frames {
+                targetBuffer[frame] = sourceBuffer[frame]
+            }
+        }
     }
 }
