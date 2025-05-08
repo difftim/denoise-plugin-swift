@@ -25,8 +25,8 @@ let package = Package(
             // for local
             // path: "libs/RNNoise.xcframework"
 
-            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.2/RNNoise.xcframework.zip",
-            checksum: "e79c4cfb5e32c1c1b658b3212d97b705a1d8d2a14818f2943ce6c5ac22fe3b8e"
+            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.3/RNNoise.xcframework.zip",
+            checksum: "7c9580e3235a0a494bf851477f0f5652fbf2380bcc320f4d20927712fc2d03a0"
         ),
         .target(
             name: "DenoisePluginFilter",
@@ -34,7 +34,8 @@ let package = Package(
                 .product(name: "LiveKit", package: "client-sdk-swift"),
                 "RNNoise",
             ],
-            path: "Sources"
+            path: "Sources",
+            exclude: ["build_rnnoise.sh", "release"]
         ),
     ]
 )
