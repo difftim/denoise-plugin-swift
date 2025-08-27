@@ -20,6 +20,8 @@ public class DenoisePluginFilter {
         var channels: Int?
         var debugLog: Bool = false
         var vadLogs: Bool = false
+        var converterTo48K: AVAudioConverter? = nil
+        var converterToSrc: AVAudioConverter? = nil
     }
 
     private let _state = StateSync(State())
@@ -56,6 +58,10 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
 
         if isNeedInit {
             rnn = nil
+            _state.mutate {
+                $0.converterTo48K = nil
+                $0.converterToSrc = nil
+            }
 
             rnn = RNNoiseWrapper()
             rnn?.initialize(
@@ -91,18 +97,44 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
         }
 
         if needResample {
-            guard
-                let processBuffer = audioBuffer.toAVAudioPCMBufferFloat()?
-                    .resample(toSampleRate: Double(_state.supportSampleRateHz)),
-                processBuffer.floatChannelData != nil
-            else {
+            guard let srcFloat32 = audioBuffer.toAVAudioPCMBufferFloat() else {
                 return
             }
 
+            _state.mutate {
+                if $0.converterTo48K == nil || $0.converterToSrc == nil {
+                    guard
+                        let targetFormat = AVAudioFormat(
+                            commonFormat: srcFloat32.format.commonFormat,
+                            sampleRate: Double($0.supportSampleRateHz),
+                            channels: srcFloat32.format.channelCount,
+                            interleaved: srcFloat32.format.isInterleaved
+                        )
+                    else { return }
+
+                    $0.converterTo48K = AVAudioConverter(
+                        from: srcFloat32.format,
+                        to: targetFormat
+                    )
+                    $0.converterToSrc = AVAudioConverter(
+                        from: targetFormat,
+                        to: srcFloat32.format
+                    )
+                }
+            }
+
+            guard
+                let converterTo48K = _state.converterTo48K,
+                let srcFloat32Resample = srcFloat32.resampleStream(
+                    converterTo48K
+                )
+            else { return }
+
             for channel in 0..<audioBuffer.channels {
                 guard
-                    let floatPointer: UnsafeMutablePointer<Float> =
-                        processBuffer.floatChannelData?[channel]
+                    let floatPointer = srcFloat32Resample.floatChannelData?[
+                        channel
+                    ]
                 else {
                     return
                 }
@@ -117,16 +149,22 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
             }
 
             guard
-                let afterProcessBuffer = processBuffer.resample(
-                    toSampleRate: Double(_state.sampleRateHz!)
+                let converterToSrc = _state.converterToSrc,
+                let dstFloat32Resample = srcFloat32Resample.resampleStream(
+                    converterToSrc
                 )
             else {
                 return
             }
 
-            audioBuffer.rewriteByAVAudioPCMBuffer(buffer: afterProcessBuffer)
+            audioBuffer.rewriteByAVAudioPCMBuffer(buffer: dstFloat32Resample)
 
         } else {
+            _state.mutate {
+                $0.converterTo48K = nil
+                $0.converterToSrc = nil
+            }
+
             for channel in 0..<audioBuffer.channels {
                 vads[channel] =
                     (rnn?.process(
@@ -145,6 +183,10 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
             print("DenoisePluginFilter: release: rnn=\(rnn)")
         }
         rnn = nil
+        _state.mutate {
+            $0.converterTo48K = nil
+            $0.converterToSrc = nil
+        }
     }
 }
 
@@ -204,5 +246,58 @@ extension LKAudioBuffer {
                 targetBuffer[frame] = sourceBuffer[frame]
             }
         }
+    }
+}
+
+extension AVAudioPCMBuffer {
+    public func resampleStream(_ converter: AVAudioConverter)
+        -> AVAudioPCMBuffer?
+    {
+        let sourceFormat = format
+
+        let capacity =
+            converter.outputFormat.sampleRate * Double(frameLength)
+            / sourceFormat.sampleRate
+
+        guard
+            let convertedBuffer = AVAudioPCMBuffer(
+                pcmFormat: converter.outputFormat,
+                frameCapacity: AVAudioFrameCount(capacity)
+            )
+        else {
+            return nil
+        }
+
+        #if swift(>=6.0)
+            // Won't be accessed concurrently, marking as nonisolated(unsafe) to avoid Atomics.
+            nonisolated(unsafe) var isDone = false
+        #else
+            var isDone = false
+        #endif
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if isDone {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            outStatus.pointee = .haveData
+            isDone = true
+            return self
+        }
+
+        var error: NSError?
+        let status = converter.convert(
+            to: convertedBuffer,
+            error: &error,
+            withInputFrom: inputBlock
+        )
+
+        if status == .error {
+            return nil
+        }
+
+        // Adjust frame length to the actual amount of data written
+        convertedBuffer.frameLength = convertedBuffer.frameCapacity
+
+        return convertedBuffer
     }
 }
