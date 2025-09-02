@@ -22,6 +22,7 @@ public class DenoisePluginFilter {
         var vadLogs: Bool = false
         var converterTo48K: AVAudioConverter? = nil
         var converterToSrc: AVAudioConverter? = nil
+        var hasInitialized: Bool = false
     }
 
     private let _state = StateSync(State())
@@ -31,6 +32,14 @@ public class DenoisePluginFilter {
             $0.debugLog = debugLog
             $0.vadLogs = vadLogs
         }
+    }
+
+    deinit {
+        if _state.debugLog {
+            print("DenoisePluginFilter: deinit release: rnn=\(rnn)")
+        }
+
+        releaseInternal()
     }
 }
 
@@ -42,47 +51,25 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
         sampleRate sampleRateHz: Int,
         channels: Int
     ) {
-        if _state.debugLog {
-            print(
-                "DenoisePluginFilter: initialize: sampleRateHz=\(sampleRateHz), channels=\(channels)"
-            )
-        }
-
-        let isNeedInit = _state.mutate {
-            let result =
-                ($0.sampleRateHz != sampleRateHz || $0.channels != channels)
-            $0.sampleRateHz = sampleRateHz
-            $0.channels = channels
-            return result
-        }
-
-        if isNeedInit {
-            rnn = nil
-            _state.mutate {
-                $0.converterTo48K = nil
-                $0.converterToSrc = nil
-            }
-
-            rnn = RNNoiseWrapper()
-            rnn?.initialize(
-                Int32(_state.supportSampleRateHz),
-                numChannels: Int32(_state.supportChannels)
-            )
-
-            if _state.debugLog {
-                print(
-                    "DenoisePluginFilter: initialize: sampleRateHz=\(sampleRateHz), channels=\(channels), rnn=\(rnn)"
-                )
-            }
-        }
+        initInternal(
+            sampleRate: sampleRateHz,
+            channels: channels,
+            fromProcess: false
+        )
     }
 
     public func audioProcessingProcess(audioBuffer: LiveKit.LKAudioBuffer) {
         guard _state.isEnabled else { return }
 
-        guard audioBuffer.channels == _state.channels else {
-            return
+        if !_state.hasInitialized {
+            initInternal(
+                sampleRate: audioBuffer.frames * 100,
+                channels: audioBuffer.channels,
+                fromProcess: true
+            )
         }
+
+        guard audioBuffer.channels == _state.channels else { return }
 
         var vads: [Float] = Array(repeating: 0.0, count: audioBuffer.channels)
         let needResample: Bool =
@@ -178,10 +165,56 @@ extension DenoisePluginFilter: AudioCustomProcessingDelegate {
 
     }
 
+    private func initInternal(
+        sampleRate sampleRateHz: Int,
+        channels: Int,
+        fromProcess: Bool
+    ) {
+        if _state.debugLog {
+            print(
+                "DenoisePluginFilter: initialize(fromProcess=\(fromProcess)): sampleRateHz=\(sampleRateHz), channels=\(channels)"
+            )
+        }
+        let isNeedInit = _state.mutate {
+            let result =
+                ($0.sampleRateHz != sampleRateHz || $0.channels != channels
+                    || !$0.hasInitialized)
+            $0.sampleRateHz = sampleRateHz
+            $0.channels = channels
+            $0.hasInitialized = true
+            return result
+        }
+
+        if isNeedInit {
+            rnn = nil
+            _state.mutate {
+                $0.converterTo48K = nil
+                $0.converterToSrc = nil
+            }
+
+            rnn = RNNoiseWrapper()
+            rnn?.initialize(
+                Int32(_state.supportSampleRateHz),
+                numChannels: Int32(_state.supportChannels)
+            )
+
+            if _state.debugLog {
+                print(
+                    "DenoisePluginFilter: initialize(fromProcess=\(fromProcess)): sampleRateHz=\(sampleRateHz), channels=\(channels), rnn=\(rnn)"
+                )
+            }
+        }
+    }
+
     public func audioProcessingRelease() {
         if _state.debugLog {
             print("DenoisePluginFilter: release: rnn=\(rnn)")
         }
+
+        releaseInternal()
+    }
+
+    private func releaseInternal() {
         rnn = nil
         _state.mutate {
             $0.converterTo48K = nil
