@@ -28,6 +28,11 @@ git commit -m "release $VERSION"
 git tag "$VERSION"
 git push && git push --tags
 
+if ! gh auth status &>/dev/null; then
+    echo "gh 未登录，正在登录..."
+    gh auth login
+fi
+
 echo "正在创建 GitHub Release 并上传 xcframework..."
 gh release create "$VERSION" \
     "$ZIP_FILE" \
