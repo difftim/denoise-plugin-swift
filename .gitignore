@@ -23,6 +23,8 @@ node_modules
 .DS_Store
 .npmrc
 libs
+libs_audio_pipeline
+libs_df
 .build
 Package.resolved
 .swiftpm
