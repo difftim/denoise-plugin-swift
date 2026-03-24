@@ -4,6 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+ZIP_FILE="release/AudioPipeline.xcframework.zip"
 VERSION=$1
 
 if [ -z "$VERSION" ]; then
@@ -12,8 +13,8 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-if [ ! -f "release/AudioPipeline.xcframework.zip" ]; then
-    echo "错误: release/AudioPipeline.xcframework.zip 不存在，请先运行 ./build_audio_pipeline.sh"
+if [ ! -f "$ZIP_FILE" ]; then
+    echo "错误: $ZIP_FILE 不存在，请先运行 ./build_audio_pipeline.sh"
     exit 1
 fi
 
@@ -29,7 +30,7 @@ git push && git push --tags
 
 echo "正在创建 GitHub Release 并上传 xcframework..."
 gh release create "$VERSION" \
-    release/AudioPipeline.xcframework.zip \
+    "$ZIP_FILE" \
     --title "$VERSION" \
     --generate-notes
 
