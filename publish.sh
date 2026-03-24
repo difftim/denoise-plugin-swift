@@ -27,6 +27,12 @@ git commit -m "release $VERSION"
 git tag "$VERSION"
 git push && git push --tags
 
+echo "正在创建 GitHub Release 并上传 xcframework..."
+gh release create "$VERSION" \
+    release/AudioPipeline.xcframework.zip \
+    --title "$VERSION" \
+    --generate-notes
+
 echo "============================"
-echo "发布完成！tag $VERSION 已推送，CI 将自动创建 Release"
+echo "发布完成！tag $VERSION 已推送，Release 已创建并上传 xcframework"
 echo "============================"

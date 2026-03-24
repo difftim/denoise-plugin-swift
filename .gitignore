@@ -25,6 +25,7 @@ node_modules
 libs
 libs_audio_pipeline
 libs_df
+release/*.zip
 .build
 Package.resolved
 .swiftpm
