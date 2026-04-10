@@ -332,12 +332,21 @@ build_soundtouch_static() {
     local ST_SRC_DIR="$SOUNDTOUCH_DIR/source/SoundTouch"
     local OBJ_FILES=()
 
-    # 编译 SoundTouch C++ 源文件（排除 x86 SIMD 文件）
+    # 编译 SoundTouch C++ 源文件
+    # mmx_optimized: 始终排除（MSVC 专用，clang 不支持）
+    # sse_optimized: 仅 x86/x86_64 包含（ARM 不需要，x86 链接器需要 SSE 符号）
     for src in "$ST_SRC_DIR"/*.cpp; do
         local base
         base="$(basename "$src" .cpp)"
+        local extra_flags=""
         case "$base" in
-            mmx_optimized|sse_optimized) continue ;;
+            mmx_optimized) continue ;;
+            sse_optimized)
+                case "$ARCH" in
+                    x86_64|i386) extra_flags="-msse2" ;;
+                    *) continue ;;
+                esac
+                ;;
         esac
         local obj="$BUILD_DIR/${base}.o"
         "$CXX" \
@@ -348,6 +357,7 @@ build_soundtouch_static() {
             -std=c++14 \
             -O3 \
             -ffunction-sections -fdata-sections \
+            $extra_flags \
             -c "$src" -o "$obj"
         OBJ_FILES+=("$obj")
     done
