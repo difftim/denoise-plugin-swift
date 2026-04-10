@@ -9,6 +9,24 @@ public enum AudioModule: String {
     case deepfilternet
 }
 
+public struct SoundTouchConfig {
+    public var enabled: Bool
+    public var pitchSemiTones: Float
+
+    public init(enabled: Bool = false, pitchSemiTones: Float = 0) {
+        self.enabled = enabled
+        self.pitchSemiTones = pitchSemiTones
+    }
+
+    public static let presets: [String: SoundTouchConfig] = [
+        "loli":     SoundTouchConfig(enabled: true,  pitchSemiTones:  10),
+        "uncle":    SoundTouchConfig(enabled: true,  pitchSemiTones:  -7),
+        "goddess":  SoundTouchConfig(enabled: true,  pitchSemiTones:   5),
+        "monster":  SoundTouchConfig(enabled: true,  pitchSemiTones: -12),
+        "original": SoundTouchConfig(enabled: false, pitchSemiTones:   0),
+    ]
+}
+
 public struct DeepFilterConfig {
     public var attenLimDb: Float
     public var postFilterBeta: Float
@@ -55,6 +73,8 @@ public class AudioPipelineProcessor {
     private var dfFrameLength: Int = 0
     private var dfOutputBuffer: UnsafeMutablePointer<Float>?
 
+    private var stContext: OpaquePointer?
+
     private struct State {
         var isEnabled: Bool = true
         var activeModule: AudioModule = .rnnoise
@@ -68,6 +88,7 @@ public class AudioPipelineProcessor {
         var converterToSrc: AVAudioConverter?
         var hasInitialized: Bool = false
         var deepFilterConfig: DeepFilterConfig = .init()
+        var soundTouchConfig: SoundTouchConfig = .init()
     }
 
     private let _state = StateSync(State())
@@ -76,22 +97,41 @@ public class AudioPipelineProcessor {
         debugLog: Bool = false,
         vadLogs: Bool = false,
         initialModule: AudioModule = .rnnoise,
-        deepFilterConfig: DeepFilterConfig = .init()
+        deepFilterConfig: DeepFilterConfig = .init(),
+        soundTouchConfig: SoundTouchConfig = .init()
     ) {
         _state.mutate {
             $0.debugLog = debugLog
             $0.vadLogs = vadLogs
             $0.activeModule = initialModule
             $0.deepFilterConfig = deepFilterConfig
+            $0.soundTouchConfig = soundTouchConfig
         }
     }
 
     deinit {
         if _state.debugLog {
-            print("AudioPipeline: deinit release: rnn=\(String(describing: rnn)), dfContext=\(String(describing: dfContext))")
+            print("AudioPipeline: deinit release: rnn=\(String(describing: rnn)), dfContext=\(String(describing: dfContext)), stContext=\(String(describing: stContext))")
         }
 
         releaseInternal()
+    }
+
+    // MARK: - SoundTouch Config
+
+    public func setSoundTouchConfig(_ config: SoundTouchConfig) {
+        _state.mutate { $0.soundTouchConfig = config }
+        if let ctx = stContext {
+            st_set_pitch_semitones(ctx, config.pitchSemiTones)
+        }
+        if _state.debugLog {
+            print("AudioPipeline: setSoundTouchConfig: enabled=\(config.enabled), pitchSemiTones=\(config.pitchSemiTones)")
+        }
+    }
+
+    public func setSoundTouchPreset(_ preset: String) {
+        let config = SoundTouchConfig.presets[preset] ?? SoundTouchConfig(enabled: true, pitchSemiTones: 0)
+        setSoundTouchConfig(config)
     }
 
     // MARK: - DeepFilterNet Config
@@ -142,6 +182,10 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
             processRnnoise(audioBuffer: audioBuffer)
         case .deepfilternet:
             processDeepFilter(audioBuffer: audioBuffer)
+        }
+
+        if _state.soundTouchConfig.enabled {
+            processSoundTouch(audioBuffer: audioBuffer)
         }
     }
 
@@ -342,6 +386,14 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
         return lsnr
     }
 
+    // MARK: - SoundTouch Processing
+
+    private func processSoundTouch(audioBuffer: LiveKit.LKAudioBuffer) {
+        guard let ctx = stContext else { return }
+        let rawBuffer = audioBuffer.rawBuffer(forChannel: 0)
+        st_process_frame(ctx, rawBuffer, Int32(audioBuffer.frames))
+    }
+
     // MARK: - Init / Release
 
     private func initInternal(
@@ -369,6 +421,7 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
 
             initRnnoise()
             initDeepFilter()
+            initSoundTouch()
 
             if _state.debugLog {
                 print(
@@ -384,6 +437,16 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
             Int32(_state.supportSampleRateHz),
             numChannels: Int32(_state.supportChannels)
         )
+    }
+
+    private func initSoundTouch() {
+        let sampleRate = _state.sampleRateHz ?? 48000
+        guard let ctx = st_create(Int32(sampleRate)) else { return }
+        stContext = ctx
+        st_set_pitch_semitones(ctx, _state.soundTouchConfig.pitchSemiTones)
+        if _state.debugLog {
+            print("AudioPipeline: SoundTouch initialized, sampleRate=\(sampleRate)")
+        }
     }
 
     private func initDeepFilter() {
@@ -433,6 +496,11 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
         if let buf = dfOutputBuffer {
             buf.deallocate()
             dfOutputBuffer = nil
+        }
+
+        if let ctx = stContext {
+            st_destroy(ctx)
+            stContext = nil
         }
 
         _state.mutate {

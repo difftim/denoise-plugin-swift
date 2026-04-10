@@ -4,6 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RNNOISE_DIR="$(cd "$SCRIPT_DIR/../rnnoise" && pwd)"
 DF_DIR="$(cd "$SCRIPT_DIR/../DeepFilterNet/libDF" && pwd)"
+SOUNDTOUCH_DIR="$(cd "$SCRIPT_DIR/../soundtouch" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/libs_audio_pipeline"
 RELEASE_DIR="$SCRIPT_DIR/release"
 HEADER_DIR="$OUTPUT_DIR/headers"
@@ -47,6 +48,15 @@ size_t df_get_frame_length(DFState *st);
 float df_process_frame(DFState *st, float *input, float *output);
 void df_set_atten_lim(DFState *st, float lim_db);
 void df_set_post_filter_beta(DFState *st, float beta);
+
+/* ── SoundTouch ────────────────────────────────────────────────────── */
+
+typedef struct STState STState;
+
+STState *st_create(int sample_rate);
+void st_destroy(STState *state);
+void st_set_pitch_semitones(STState *state, float semitones);
+int st_process_frame(STState *state, float *samples, int num_samples);
 
 #ifdef __cplusplus
 }
@@ -293,7 +303,78 @@ build_deepfilter_static() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# 第三步：合并 librnnoise.a + libdf.a → libaudio_pipeline.a
+# 第三步：编译 SoundTouch 为静态库
+# ═══════════════════════════════════════════════════════════════════
+
+build_soundtouch_static() {
+    local PLATFORM=$1
+    local ARCH=$2
+    local SDK=$3
+
+    echo "============================"
+    echo "编译 SoundTouch 静态库: $PLATFORM ($ARCH)..."
+    echo "============================"
+
+    local LIB_DIR="$OUTPUT_DIR/${PLATFORM}/${ARCH}"
+    mkdir -p "$LIB_DIR"
+
+    local BUILD_DIR="$OUTPUT_DIR/build_soundtouch_${PLATFORM}_${ARCH}"
+    rm -rf "$BUILD_DIR"
+    mkdir -p "$BUILD_DIR"
+
+    local CXX
+    CXX="$(xcrun --sdk "$SDK" --find clang++)"
+    local SYSROOT
+    SYSROOT="$(xcrun --sdk "$SDK" --show-sdk-path)"
+    local VERSION_FLAG
+    VERSION_FLAG=$(min_version_flag "$PLATFORM")
+
+    local ST_SRC_DIR="$SOUNDTOUCH_DIR/source/SoundTouch"
+    local OBJ_FILES=()
+
+    # 编译 SoundTouch C++ 源文件（排除 x86 SIMD 文件）
+    for src in "$ST_SRC_DIR"/*.cpp; do
+        local base
+        base="$(basename "$src" .cpp)"
+        case "$base" in
+            mmx_optimized|sse_optimized) continue ;;
+        esac
+        local obj="$BUILD_DIR/${base}.o"
+        "$CXX" \
+            -arch "$ARCH" \
+            -isysroot "$SYSROOT" \
+            $VERSION_FLAG \
+            -I "$SOUNDTOUCH_DIR/include" \
+            -std=c++14 \
+            -O3 \
+            -ffunction-sections -fdata-sections \
+            -c "$src" -o "$obj"
+        OBJ_FILES+=("$obj")
+    done
+
+    # 编译 iOS C 桥接层
+    local BRIDGE_OBJ="$BUILD_DIR/soundtouch_ios.o"
+    "$CXX" \
+        -arch "$ARCH" \
+        -isysroot "$SYSROOT" \
+        $VERSION_FLAG \
+        -I "$SOUNDTOUCH_DIR/include" \
+        -std=c++14 \
+        -O3 \
+        -ffunction-sections -fdata-sections \
+        -c "$SCRIPT_DIR/soundtouch_ios.cpp" -o "$BRIDGE_OBJ"
+    OBJ_FILES+=("$BRIDGE_OBJ")
+
+    xcrun ar rcs "$LIB_DIR/libsoundtouch.a" "${OBJ_FILES[@]}"
+    xcrun ranlib "$LIB_DIR/libsoundtouch.a"
+
+    rm -rf "$BUILD_DIR"
+
+    echo "完成: $LIB_DIR/libsoundtouch.a"
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# 第四步：合并 librnnoise.a + libdf.a + libsoundtouch.a → libaudio_pipeline.a
 # ═══════════════════════════════════════════════════════════════════
 
 merge_libs() {
@@ -308,7 +389,8 @@ merge_libs() {
 
     xcrun libtool -static -o "$MERGED_DIR/libaudio_pipeline.a" \
         "$LIB_DIR/librnnoise.a" \
-        "$LIB_DIR/libdf.a"
+        "$LIB_DIR/libdf.a" \
+        "$LIB_DIR/libsoundtouch.a"
 
     echo "完成: $MERGED_DIR/libaudio_pipeline.a"
 }
@@ -524,7 +606,18 @@ if [ -f "$CARGO_TOML_BAK" ]; then
 fi
 trap - EXIT
 
-# 3) 合并
+# 3) 编译 SoundTouch
+for ((i=0; i<${#PLATFORMS[@]}; i++)); do
+    PLATFORM="${PLATFORMS[i]}"
+    ARCH_LIST="${C_ARCHS[i]}"
+    SDK="${SDKS[i]}"
+
+    for ARCH in $ARCH_LIST; do
+        build_soundtouch_static "$PLATFORM" "$ARCH" "$SDK"
+    done
+done
+
+# 4) 合并
 for ((i=0; i<${#PLATFORMS[@]}; i++)); do
     PLATFORM="${PLATFORMS[i]}"
     ARCH_LIST="${C_ARCHS[i]}"
@@ -534,7 +627,7 @@ for ((i=0; i<${#PLATFORMS[@]}; i++)); do
     done
 done
 
-# 4) 动态 Framework + XCFramework
+# 5) 动态 Framework + XCFramework
 for ((i=0; i<${#PLATFORMS[@]}; i++)); do
     PLATFORM="${PLATFORMS[i]}"
     ARCH_LIST="${C_ARCHS[i]}"
@@ -543,10 +636,10 @@ for ((i=0; i<${#PLATFORMS[@]}; i++)); do
 done
 create_xcframework
 
-# 5) 压缩 + 自动更新 checksum
+# 6) 压缩 + 自动更新 checksum
 compress_xcframework
 
-# 6) 清理中间产物
+# 7) 清理中间产物
 cleanup_intermediates
 
 echo "============================"
