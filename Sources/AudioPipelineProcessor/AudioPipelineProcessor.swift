@@ -52,7 +52,7 @@ public struct DeepFilterConfig {
 public typealias DenoisePluginFilter = AudioPipelineProcessor
 
 public class AudioPipelineProcessor {
-    @available(*, deprecated, renamed: "setDenoiseEnabled")
+    @available(*, deprecated, renamed: "setDenoiseEnabled(_:)")
     public var isEnabled: Bool {
         get { _state.isEnabled }
         set { _state.mutate { $0.isEnabled = newValue } }
