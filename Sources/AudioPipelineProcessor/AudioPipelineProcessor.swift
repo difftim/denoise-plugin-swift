@@ -19,10 +19,10 @@ public struct SoundTouchConfig {
     }
 
     public static let presets: [String: SoundTouchConfig] = [
-        "loli":     SoundTouchConfig(enabled: true,  pitchSemiTones:  10),
-        "uncle":    SoundTouchConfig(enabled: true,  pitchSemiTones:  -7),
-        "goddess":  SoundTouchConfig(enabled: true,  pitchSemiTones:   5),
-        "monster":  SoundTouchConfig(enabled: true,  pitchSemiTones: -12),
+        "loli":     SoundTouchConfig(enabled: true,  pitchSemiTones:  12),
+        "uncle":    SoundTouchConfig(enabled: true,  pitchSemiTones:  -4),
+        "goddess":  SoundTouchConfig(enabled: true,  pitchSemiTones:   4),
+        "monster":  SoundTouchConfig(enabled: true,  pitchSemiTones: -10),
         "original": SoundTouchConfig(enabled: false, pitchSemiTones:   0),
     ]
 }
