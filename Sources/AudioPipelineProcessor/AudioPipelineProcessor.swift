@@ -52,6 +52,7 @@ public struct DeepFilterConfig {
 public typealias DenoisePluginFilter = AudioPipelineProcessor
 
 public class AudioPipelineProcessor {
+    @available(*, deprecated, renamed: "setDenoiseEnabled")
     public var isEnabled: Bool {
         get { _state.isEnabled }
         set { _state.mutate { $0.isEnabled = newValue } }
@@ -117,6 +118,21 @@ public class AudioPipelineProcessor {
         releaseInternal()
     }
 
+    // MARK: - Denoise / VoiceChanger Switches
+
+    public func setDenoiseEnabled(_ enabled: Bool) {
+        _state.mutate { $0.isEnabled = enabled }
+        if _state.debugLog {
+            print("AudioPipeline: setDenoiseEnabled: \(enabled)")
+        }
+    }
+
+    public func setVoiceChangerEnabled(_ enabled: Bool) {
+        var config = _state.soundTouchConfig
+        config.enabled = enabled
+        setSoundTouchConfig(config)
+    }
+
     // MARK: - SoundTouch Config
 
     public func setSoundTouchConfig(_ config: SoundTouchConfig) {
@@ -165,8 +181,6 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
     }
 
     public func audioProcessingProcess(audioBuffer: LiveKit.LKAudioBuffer) {
-        guard _state.isEnabled else { return }
-
         if !_state.hasInitialized {
             initInternal(
                 sampleRate: audioBuffer.frames * 100,
@@ -177,11 +191,13 @@ extension AudioPipelineProcessor: AudioCustomProcessingDelegate {
 
         guard audioBuffer.channels == _state.channels else { return }
 
-        switch _state.activeModule {
-        case .rnnoise:
-            processRnnoise(audioBuffer: audioBuffer)
-        case .deepfilternet:
-            processDeepFilter(audioBuffer: audioBuffer)
+        if _state.isEnabled {
+            switch _state.activeModule {
+            case .rnnoise:
+                processRnnoise(audioBuffer: audioBuffer)
+            case .deepfilternet:
+                processDeepFilter(audioBuffer: audioBuffer)
+            }
         }
 
         if _state.soundTouchConfig.enabled {
