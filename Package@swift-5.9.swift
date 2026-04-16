@@ -28,8 +28,8 @@ let package = Package(
             // path: "libs_audio_pipeline/AudioPipeline.xcframework"
 
             // for remote release:
-            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.11/AudioPipeline.xcframework.zip",
-            checksum: "b3874da7588649bc6e1e79ed483e33ce91dd22c8a723f2b49f5c26b82cc90faf"
+            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.12/AudioPipeline.xcframework.zip",
+            checksum: "027efb46c976d717d93592be1a01ec839528cccffd5103c30ad6f99e848f1864"
         ),
         .target(
             name: "AudioPipelineProcessor",
