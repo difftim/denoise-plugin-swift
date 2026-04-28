@@ -420,19 +420,59 @@ build_dynamic_framework() {
 
     local FW_DIR="$OUTPUT_DIR/frameworks/$PLATFORM/AudioPipeline.framework"
     rm -rf "$FW_DIR"
-    mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
+
+    # macOS 必须用 deep bundle (Versions/A/...)，iOS / iOS-Simulator 用 shallow bundle
+    local IS_MACOS=0
+    if [ "$PLATFORM" = "macos" ]; then
+        IS_MACOS=1
+    fi
+
+    local HEADERS_DIR MODULES_DIR INFO_PLIST_DIR BINARY_DIR INSTALL_NAME
+
+    if [ "$IS_MACOS" = "1" ]; then
+        mkdir -p "$FW_DIR/Versions/A/Headers"
+        mkdir -p "$FW_DIR/Versions/A/Modules"
+        mkdir -p "$FW_DIR/Versions/A/Resources"
+        HEADERS_DIR="$FW_DIR/Versions/A/Headers"
+        MODULES_DIR="$FW_DIR/Versions/A/Modules"
+        INFO_PLIST_DIR="$FW_DIR/Versions/A/Resources"
+        BINARY_DIR="$FW_DIR/Versions/A"
+        INSTALL_NAME="@rpath/AudioPipeline.framework/Versions/A/AudioPipeline"
+        # macOS deep bundle 需要的 symlink
+        (cd "$FW_DIR/Versions" && ln -sfh A Current)
+        (cd "$FW_DIR" && ln -sfh Versions/Current/Headers Headers)
+        (cd "$FW_DIR" && ln -sfh Versions/Current/Modules Modules)
+        (cd "$FW_DIR" && ln -sfh Versions/Current/Resources Resources)
+        (cd "$FW_DIR" && ln -sfh Versions/Current/AudioPipeline AudioPipeline)
+    else
+        mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
+        HEADERS_DIR="$FW_DIR/Headers"
+        MODULES_DIR="$FW_DIR/Modules"
+        INFO_PLIST_DIR="$FW_DIR"
+        BINARY_DIR="$FW_DIR"
+        INSTALL_NAME="@rpath/AudioPipeline.framework/AudioPipeline"
+    fi
 
     # 拷贝头文件和 modulemap
-    cp "$HEADER_DIR/audio_pipeline.h" "$FW_DIR/Headers/"
-    cat > "$FW_DIR/Modules/module.modulemap" << 'MMAP'
+    cp "$HEADER_DIR/audio_pipeline.h" "$HEADERS_DIR/"
+    cat > "$MODULES_DIR/module.modulemap" << 'MMAP'
 framework module AudioPipeline {
     header "audio_pipeline.h"
     export *
 }
 MMAP
 
-    # Info.plist
-    cat > "$FW_DIR/Info.plist" << PLIST
+    # Info.plist 的最低版本字段在 iOS / macOS 上不同
+    local MIN_VERSION_KEY MIN_VERSION_VALUE
+    if [ "$IS_MACOS" = "1" ]; then
+        MIN_VERSION_KEY="LSMinimumSystemVersion"
+        MIN_VERSION_VALUE="$MIN_MACOS_VERSION"
+    else
+        MIN_VERSION_KEY="MinimumOSVersion"
+        MIN_VERSION_VALUE="$MIN_IOS_VERSION"
+    fi
+
+    cat > "$INFO_PLIST_DIR/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -449,8 +489,8 @@ MMAP
     <string>FMWK</string>
     <key>CFBundleExecutable</key>
     <string>AudioPipeline</string>
-    <key>MinimumOSVersion</key>
-    <string>$MIN_IOS_VERSION</string>
+    <key>$MIN_VERSION_KEY</key>
+    <string>$MIN_VERSION_VALUE</string>
 </dict>
 </plist>
 PLIST
@@ -461,7 +501,6 @@ PLIST
     CC="$(xcrun --sdk "$SDK" --find clang)"
 
     local VERSION_FLAGS=""
-    local INSTALL_NAME_DIR="@rpath/AudioPipeline.framework"
     case "$PLATFORM" in
         ios)
             VERSION_FLAGS="-miphoneos-version-min=$MIN_IOS_VERSION"
@@ -483,7 +522,7 @@ PLIST
             -isysroot "$SYSROOT" \
             $VERSION_FLAGS \
             -dynamiclib \
-            -install_name "$INSTALL_NAME_DIR/AudioPipeline" \
+            -install_name "$INSTALL_NAME" \
             -Wl,-all_load "$OUTPUT_DIR/merged/${PLATFORM}/${ARCH}/libaudio_pipeline.a" \
             -Wl,-dead_strip \
             -Wl,-x \
@@ -502,9 +541,9 @@ PLIST
 
     # 合并多架构为 fat dylib
     if [ ${#DYLIB_SLICES[@]} -eq 1 ]; then
-        cp "${DYLIB_SLICES[0]}" "$FW_DIR/AudioPipeline"
+        cp "${DYLIB_SLICES[0]}" "$BINARY_DIR/AudioPipeline"
     else
-        lipo -create "${DYLIB_SLICES[@]}" -output "$FW_DIR/AudioPipeline"
+        lipo -create "${DYLIB_SLICES[@]}" -output "$BINARY_DIR/AudioPipeline"
     fi
 
     # 清理单架构临时文件
@@ -513,7 +552,7 @@ PLIST
     done
 
     local SIZE
-    SIZE=$(wc -c < "$FW_DIR/AudioPipeline" | tr -d ' ')
+    SIZE=$(wc -c < "$BINARY_DIR/AudioPipeline" | tr -d ' ')
     echo "Framework 完成: $FW_DIR ($(( SIZE / 1048576 ))MB)"
 }
 
