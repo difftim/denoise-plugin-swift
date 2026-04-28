@@ -585,7 +585,9 @@ compress_xcframework() {
     local ZIP_OUTPUT="$RELEASE_DIR/AudioPipeline.xcframework.zip"
     rm -f "$ZIP_OUTPUT"
     cd "$OUTPUT_DIR"
-    zip -r "$ZIP_OUTPUT" AudioPipeline.xcframework
+    # -y 保留 symlinks（macOS deep bundle 必须，否则解压后 Versions/Current 等
+    # 会变成真实目录，codesign 会失败，体积也会膨胀几倍）
+    zip -ry "$ZIP_OUTPUT" AudioPipeline.xcframework
 
     local CHECKSUM
     CHECKSUM=$(swift package compute-checksum "$ZIP_OUTPUT")
