@@ -64,13 +64,12 @@ public final class OfflineAudioPipeline {
         return core.process(input)
     }
 
-    /// Drain any residual tail PCM held inside stateful processors. For
-    /// pure-denoise pipelines this always returns an empty array.
-    ///
-    /// The current SDK ships without a SoundTouch drain entry point in the
-    /// native bridge, so this returns an empty array today. The signature is
-    /// stable — wiring `flush()` into the recording stop flow now means tail
-    /// PCM starts to appear automatically once the native interface lands.
+    /// Drain residual PCM held inside the pipeline. Today this returns the
+    /// sub-frame remainder from the input ring buffer (zero-padded for
+    /// processing, then trimmed back to the real sample count). SoundTouch's
+    /// internal FIFO tail isn't included yet — the C bridge doesn't expose
+    /// a drain entry point — so the very last 10–20 ms can still be missing
+    /// when voice changer is enabled.
     public func flush() -> [Float] {
         return core.flush()
     }

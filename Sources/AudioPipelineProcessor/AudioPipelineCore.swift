@@ -118,13 +118,47 @@ internal final class AudioPipelineCore {
         return out
     }
 
-    /// Drain any residual PCM held inside stateful processors. The current
-    /// SoundTouch C bridge does not yet expose a drain entry, so this returns
-    /// an empty array for now. Stable signature so callers can wire flush()
-    /// into their stop flow today.
+    /// Drain residual PCM held inside the pipeline:
+    ///
+    /// 1. Pull whatever the input ring buffer has accumulated since the last
+    ///    frame-aligned `process()` call (typically < 1 RNNoise frame), pad
+    ///    it to a full frame with zeros, run it through denoise + voice
+    ///    changer, and return only the slice of samples that correspond to
+    ///    actual mic input (i.e. the zero padding is discarded).
+    /// 2. SoundTouch's internal FIFO tail is NOT included — the C bridge
+    ///    does not yet expose a `receiveSamples`-only entry point, so any
+    ///    samples still inside SoundTouch's lookahead/sequence buffers stay
+    ///    there. Wire-level impact is sub-frame today and only affects the
+    ///    very last 10–20 ms when voice changer is enabled.
     func flush() -> [Float] {
         precondition(!released, "AudioPipelineCore: instance has been released")
-        return []
+        let remaining = inputRing.framesAvailable
+        let frameLen = frameLength
+        if remaining == 0 || frameLen == 0 { return [] }
+
+        var padded = [Float](repeating: 0, count: frameLen)
+        var tail = [Float](repeating: 0, count: remaining)
+        _ = inputRing.pull(into: &tail)
+        for i in 0..<remaining { padded[i] = tail[i] }
+
+        if denoiseEnabled {
+            switch activeModule {
+            case .rnnoise:
+                if let ctx = rnnoiseContext {
+                    applyRnnoise(ctx: ctx, frame: &padded)
+                }
+            case .deepfilternet:
+                if let ctx = dfContext, dfFrameLength == frameLen {
+                    applyDeepFilter(ctx: ctx, frame: &padded)
+                }
+            }
+        }
+
+        if soundTouchConfig.enabled, let ctx = stContext {
+            applySoundTouch(ctx: ctx, frame: &padded)
+        }
+
+        return Array(padded[0..<remaining])
     }
 
     /// Clear internal buffers and reset SoundTouch warmup state.
