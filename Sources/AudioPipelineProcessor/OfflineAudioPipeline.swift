@@ -64,12 +64,15 @@ public final class OfflineAudioPipeline {
         return core.process(input)
     }
 
-    /// Drain residual PCM held inside the pipeline. Today this returns the
-    /// sub-frame remainder from the input ring buffer (zero-padded for
-    /// processing, then trimmed back to the real sample count). SoundTouch's
-    /// internal FIFO tail isn't included yet — the C bridge doesn't expose
-    /// a drain entry point — so the very last 10–20 ms can still be missing
-    /// when voice changer is enabled.
+    /// Drain residual PCM held inside the pipeline. Returns the sub-frame
+    /// remainder from the input ring buffer (zero-padded for processing,
+    /// then trimmed back to the real sample count) so total output sample
+    /// count matches total input sample count.
+    ///
+    /// Voice changer caveat: SoundTouch's ~50 ms algorithmic FIFO is not
+    /// drained at flush time — see `AudioPipelineCore.flush()` for the
+    /// full explanation. Sample counts still align; only the "processed
+    /// tail" information of the last ~50 ms of recording is lost.
     public func flush() -> [Float] {
         return core.flush()
     }

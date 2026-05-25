@@ -118,18 +118,26 @@ internal final class AudioPipelineCore {
         return out
     }
 
-    /// Drain residual PCM held inside the pipeline:
+    /// Drain residual PCM held inside the pipeline.
     ///
-    /// 1. Pull whatever the input ring buffer has accumulated since the last
-    ///    frame-aligned `process()` call (typically < 1 RNNoise frame), pad
-    ///    it to a full frame with zeros, run it through denoise + voice
-    ///    changer, and return only the slice of samples that correspond to
-    ///    actual mic input (i.e. the zero padding is discarded).
-    /// 2. SoundTouch's internal FIFO tail is NOT included — the C bridge
-    ///    does not yet expose a `receiveSamples`-only entry point, so any
-    ///    samples still inside SoundTouch's lookahead/sequence buffers stay
-    ///    there. Wire-level impact is sub-frame today and only affects the
-    ///    very last 10–20 ms when voice changer is enabled.
+    /// Pulls whatever the input ring buffer has accumulated since the last
+    /// frame-aligned `process()` call (typically < 1 RNNoise frame =
+    /// ≤ 10 ms), pads it to a full frame with zeros, runs it through
+    /// denoise + voice changer, and returns only the slice of samples that
+    /// correspond to actual mic input. The zero padding never appears in
+    /// the returned array, so the **total output sample count is identical
+    /// to the total input sample count** when `process()` and `flush()`
+    /// are called as a pair.
+    ///
+    /// Voice changer note: SoundTouch keeps an internal ~40–50 ms FIFO
+    /// (SETTING_SEQUENCE_MS=40, OVERLAP_MS=8) that always lags its input
+    /// by that algorithmic delay. The current `st_process_frame` wrapper
+    /// preserves byte-perfect length by passing samples through unmodified
+    /// whenever SoundTouch hasn't produced a full frame yet. The trade-off
+    /// is informational, not numerical: the first ~50 ms of output is
+    /// unprocessed passthrough (warmup), and the last ~50 ms of the
+    /// recording's processed form stays in SoundTouch's FIFO and is NOT
+    /// emitted at flush time. Sample counts still match exactly.
     func flush() -> [Float] {
         precondition(!released, "AudioPipelineCore: instance has been released")
         let remaining = inputRing.framesAvailable
