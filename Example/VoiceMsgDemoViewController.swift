@@ -45,14 +45,18 @@ public final class VoiceMsgDemoViewController: UIViewController {
     private var inputToProcessingConverter: AVAudioConverter?
 
     private var pipeline: OfflineAudioPipeline?
+    private var denoiseOnlyPipeline: OfflineAudioPipeline?
     private var originalURL: URL?
+    private var denoisedURL: URL?
     private var processedURL: URL?
     private var originalChunks: [[Float]] = []
+    private var denoisedChunks: [[Float]] = []
     private var processedChunks: [[Float]] = []
     private var startTimestamp: CFAbsoluteTime = 0
     private var tapFrameCount: Int = 0
 
     private var originalPlayer: AVPlayer?
+    private var denoisedPlayer: AVPlayer?
     private var processedPlayer: AVPlayer?
 
     private enum RecordingState { case idle, preparing, recording, stopped, cancelled }
@@ -62,11 +66,13 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     private let statusLabel = UILabel()
     private let originalInfoLabel = UILabel()
+    private let denoisedInfoLabel = UILabel()
     private let processedInfoLabel = UILabel()
     private let startButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
     private let cancelButton = UIButton(type: .system)
     private let playOriginalButton = UIButton(type: .system)
+    private let playDenoisedButton = UIButton(type: .system)
     private let playProcessedButton = UIButton(type: .system)
     private let denoiseModelControl = UISegmentedControl(items: ["RNNoise", "DeepFilterNet"])
     private let voicePresetControl = UISegmentedControl(items: ["Original", "Loli", "Goddess", "Uncle", "Monster"])
@@ -99,7 +105,7 @@ public final class VoiceMsgDemoViewController: UIViewController {
         statusLabel.textAlignment = .center
         statusLabel.numberOfLines = 0
 
-        for label in [originalInfoLabel, processedInfoLabel] {
+        for label in [originalInfoLabel, denoisedInfoLabel, processedInfoLabel] {
             label.font = .systemFont(ofSize: 12)
             label.textColor = .secondaryLabel
             label.numberOfLines = 0
@@ -109,6 +115,7 @@ public final class VoiceMsgDemoViewController: UIViewController {
         configure(button: stopButton, title: "Stop", action: #selector(onStop))
         configure(button: cancelButton, title: "Cancel", action: #selector(onCancel))
         configure(button: playOriginalButton, title: "Play original", action: #selector(onPlayOriginal))
+        configure(button: playDenoisedButton, title: "Play denoised", action: #selector(onPlayDenoised))
         configure(button: playProcessedButton, title: "Play processed", action: #selector(onPlayProcessed))
 
         denoiseModelControl.selectedSegmentIndex = 0
@@ -126,14 +133,14 @@ public final class VoiceMsgDemoViewController: UIViewController {
         controlRow.distribution = .fillEqually
         controlRow.spacing = 12
 
-        let playRow = UIStackView(arrangedSubviews: [playOriginalButton, playProcessedButton])
+        let playRow = UIStackView(arrangedSubviews: [playOriginalButton, playDenoisedButton, playProcessedButton])
         playRow.axis = .horizontal
         playRow.distribution = .fillEqually
         playRow.spacing = 12
 
         let stack = UIStackView(arrangedSubviews: [
             statusLabel, denoiseModelRow, denoiseRow, voicePresetRow, voiceRow, controlRow,
-            originalInfoLabel, processedInfoLabel, playRow,
+            originalInfoLabel, denoisedInfoLabel, processedInfoLabel, playRow,
         ])
         stack.axis = .vertical
         stack.spacing = 16
@@ -192,13 +199,14 @@ public final class VoiceMsgDemoViewController: UIViewController {
         case .idle:       statusLabel.text = "Idle — tap Start to record"
         case .preparing:  statusLabel.text = "Preparing audio pipeline..."
         case .recording:  statusLabel.text = "Recording..."
-        case .stopped:    statusLabel.text = "Stopped — both candidates ready"
+        case .stopped:    statusLabel.text = "Stopped — candidates ready"
         case .cancelled:  statusLabel.text = "Cancelled"
         }
         startButton.isEnabled = (recordingState != .preparing && recordingState != .recording)
         stopButton.isEnabled = (recordingState == .recording)
         cancelButton.isEnabled = (recordingState == .recording)
         playOriginalButton.isEnabled = (isReadableAudioFile(originalURL) && recordingState != .preparing && recordingState != .recording)
+        playDenoisedButton.isEnabled = (isReadableAudioFile(denoisedURL) && recordingState != .preparing && recordingState != .recording)
         playProcessedButton.isEnabled = (isReadableAudioFile(processedURL) && recordingState != .preparing && recordingState != .recording)
         denoiseModelControl.isEnabled = (recordingState != .preparing && recordingState != .recording)
         denoiseSwitch.isEnabled = (recordingState != .preparing && recordingState != .recording)
@@ -206,6 +214,7 @@ public final class VoiceMsgDemoViewController: UIViewController {
         voiceChangerSwitch.isEnabled = (recordingState != .preparing && recordingState != .recording)
 
         originalInfoLabel.text = describe(url: originalURL, label: "original")
+        denoisedInfoLabel.text = describe(url: denoisedURL, label: "denoised")
         processedInfoLabel.text = describe(url: processedURL, label: "processed")
     }
 
@@ -264,7 +273,7 @@ public final class VoiceMsgDemoViewController: UIViewController {
         finishRecording(deleteFiles: false)
         recordingState = .stopped
         refreshUI()
-        logDemo("stopped original=\(describeForLog(url: originalURL)) processed=\(describeForLog(url: processedURL))")
+        logDemo("stopped original=\(describeForLog(url: originalURL)) denoised=\(describeForLog(url: denoisedURL)) processed=\(describeForLog(url: processedURL))")
     }
 
     @objc private func onCancel() {
@@ -276,6 +285,10 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     @objc private func onPlayOriginal() {
         originalPlayer = playFile(at: originalURL)
+    }
+
+    @objc private func onPlayDenoised() {
+        denoisedPlayer = playFile(at: denoisedURL)
     }
 
     @objc private func onPlayProcessed() {
@@ -295,11 +308,14 @@ public final class VoiceMsgDemoViewController: UIViewController {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
         let originalURL = dir.appendingPathComponent("original-\(stamp).m4a")
+        let denoisedURL = dir.appendingPathComponent("denoised-\(stamp).m4a")
         let processedURL = dir.appendingPathComponent("processed-\(stamp).m4a")
         self.originalURL = originalURL
+        self.denoisedURL = denoisedURL
         self.processedURL = processedURL
 
         originalChunks.removeAll(keepingCapacity: true)
+        denoisedChunks.removeAll(keepingCapacity: true)
         processedChunks.removeAll(keepingCapacity: true)
         tapFrameCount = 0
 
@@ -314,6 +330,14 @@ public final class VoiceMsgDemoViewController: UIViewController {
         )
         self.pipeline = pipeline
         logDemo("pipeline init done")
+
+        let denoiseOnlyPipeline = OfflineAudioPipeline(
+            initialModule: selectedDenoiseModule(),
+            soundTouchConfig: SoundTouchConfig(enabled: false, pitchSemiTones: 0),
+            denoiseEnabled: denoiseSwitch.isOn
+        )
+        self.denoiseOnlyPipeline = denoiseOnlyPipeline
+        logDemo("denoise-only pipeline init done")
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -332,6 +356,7 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     private func handleTap(buffer: AVAudioPCMBuffer) {
         guard let pipeline = pipeline,
+              let denoiseOnlyPipeline = denoiseOnlyPipeline,
               let converter = inputToProcessingConverter else {
             return
         }
@@ -363,7 +388,13 @@ public final class VoiceMsgDemoViewController: UIViewController {
         // Branch A: keep original PCM. Encoding happens after Stop, outside the audio callback.
         originalChunks.append(inputArray)
 
-        // Branch B: hand the same samples to the SDK. Encoding happens after Stop.
+        // Branch B: denoise-only candidate, useful when voice changer is enabled.
+        let denoised = denoiseOnlyPipeline.process(inputArray)
+        if !denoised.isEmpty {
+            denoisedChunks.append(denoised)
+        }
+
+        // Branch C: final processed candidate. Encoding happens after Stop.
         let processed = pipeline.process(inputArray)
         if !processed.isEmpty {
             processedChunks.append(processed)
@@ -402,24 +433,32 @@ public final class VoiceMsgDemoViewController: UIViewController {
     }
 
     private func finishRecording(deleteFiles: Bool) {
-        logDemo("finish begin deleteFiles=\(deleteFiles) frames=\(tapFrameCount) originalChunks=\(originalChunks.count) processedChunks=\(processedChunks.count)")
+        logDemo("finish begin deleteFiles=\(deleteFiles) frames=\(tapFrameCount) originalChunks=\(originalChunks.count) denoisedChunks=\(denoisedChunks.count) processedChunks=\(processedChunks.count)")
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
         engine.reset()
 
         if !deleteFiles, let pipeline = pipeline {
             logDemo("flush begin")
+            if let denoiseOnlyPipeline {
+                let denoisedTail = denoiseOnlyPipeline.flush()
+                logDemo("denoise-only flush done tailSamples=\(denoisedTail.count)")
+                if !denoisedTail.isEmpty { denoisedChunks.append(denoisedTail) }
+            }
             let tail = pipeline.flush()
             logDemo("flush done tailSamples=\(tail.count)")
             if !tail.isEmpty { processedChunks.append(tail) }
             do {
                 if let originalURL { try writeChunks(originalChunks, to: originalURL) }
+                if let denoisedURL { try writeChunks(denoisedChunks, to: denoisedURL) }
                 if let processedURL { try writeChunks(processedChunks, to: processedURL) }
             } catch {
                 statusLabel.text = "Write failed: \(error.localizedDescription)"
                 if let url = originalURL { try? FileManager.default.removeItem(at: url) }
+                if let url = denoisedURL { try? FileManager.default.removeItem(at: url) }
                 if let url = processedURL { try? FileManager.default.removeItem(at: url) }
                 originalURL = nil
+                denoisedURL = nil
                 processedURL = nil
             }
         }
@@ -427,14 +466,19 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
         pipeline?.release()
         pipeline = nil
+        denoiseOnlyPipeline?.release()
+        denoiseOnlyPipeline = nil
         inputToProcessingConverter = nil
         originalChunks.removeAll(keepingCapacity: true)
+        denoisedChunks.removeAll(keepingCapacity: true)
         processedChunks.removeAll(keepingCapacity: true)
 
         if deleteFiles {
             if let url = originalURL { try? FileManager.default.removeItem(at: url) }
+            if let url = denoisedURL { try? FileManager.default.removeItem(at: url) }
             if let url = processedURL { try? FileManager.default.removeItem(at: url) }
             originalURL = nil
+            denoisedURL = nil
             processedURL = nil
         } else {
             try? configureAudioSessionForPlayback()
@@ -474,17 +518,17 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     private func cleanupPlayers() {
         originalPlayer?.pause()
+        denoisedPlayer?.pause()
         processedPlayer?.pause()
         originalPlayer = nil
+        denoisedPlayer = nil
         processedPlayer = nil
     }
 
     private func configureAudioSessionForRecording() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
-            .playAndRecord,
-            mode: .default,
-            options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            .record
         )
         try session.setActive(true)
     }

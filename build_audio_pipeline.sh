@@ -120,6 +120,50 @@ rust_flags_for_platform() {
     esac
 }
 
+patch_rnnoise_objc_wrapper() {
+    python3 - <<PY
+from pathlib import Path
+
+root = Path("$RNNOISE_DIR")
+header = root / "include" / "RNNoiseObjC.h"
+impl = root / "src" / "RNNoiseObjC.m"
+
+header_text = header.read_text()
+if "processFrame:(float *)frame frameSize:(int)frameSize" not in header_text:
+    header_text = header_text.replace(
+        "- (float)processWithBands:(int)bands\\n"
+        "                   frames:(int)frames\\n"
+        "               bufferSize:(int)bufferSize\\n"
+        "                   buffer:(float *)buffer;\\n",
+        "- (float)processWithBands:(int)bands\\n"
+        "                   frames:(int)frames\\n"
+        "               bufferSize:(int)bufferSize\\n"
+        "                   buffer:(float *)buffer;\\n"
+        "- (float)processFrame:(float *)frame frameSize:(int)frameSize;\\n"
+        "- (BOOL)reset;\\n",
+    )
+    header.write_text(header_text)
+
+impl_text = impl.read_text()
+if "processFrame:(float *)frame frameSize:(int)frameSize" not in impl_text:
+    impl_text = impl_text.replace(
+        "- (void)uninitialize {\\n",
+        "- (float)processFrame:(float *)frame frameSize:(int)frameSize {\\n"
+        "    if (!_denoiseState || !frame || frameSize != rnnoise_get_frame_size()) {\\n"
+        "        return .0f;\\n"
+        "    }\\n\\n"
+        "    return rnnoise_process_frame(_denoiseState, frame, frame);\\n"
+        "}\\n\\n"
+        "- (BOOL)reset {\\n"
+        "    [self uninitialize];\\n"
+        "    return [self initialize:_supportSampleRateHz numChannels:_supportNumChannels];\\n"
+        "}\\n\\n"
+        "- (void)uninitialize {\\n",
+    )
+    impl.write_text(impl_text)
+PY
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # 第一步：通过 autotools 编译 RNNoise 为静态库
 # ═══════════════════════════════════════════════════════════════════
@@ -156,6 +200,7 @@ build_rnnoise_static() {
     cd "$RNNOISE_DIR"
     git checkout -- . 2>/dev/null || true
     git clean -fd . 2>/dev/null || true
+    patch_rnnoise_objc_wrapper
 
     # 运行 autogen（会解压模型数据并执行 autoreconf）
     ./autogen.sh
