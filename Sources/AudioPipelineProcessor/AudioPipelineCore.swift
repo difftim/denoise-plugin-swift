@@ -15,7 +15,7 @@ internal final class AudioPipelineCore {
     private static let rnnoiseFrameSize = 480
     private static let ringCapacityFrames = 128
 
-    private var rnnoiseContext: OpaquePointer?
+    private var rnnoiseWrapper: RNNoiseWrapper?
     private var dfContext: OpaquePointer?
     private var stContext: OpaquePointer?
 
@@ -94,8 +94,8 @@ internal final class AudioPipelineCore {
                 if denoiseEnabled {
                     switch activeModule {
                     case .rnnoise:
-                        if let ctx = rnnoiseContext {
-                            applyRnnoise(ctx: ctx, frame: &frameScratch)
+                        if let wrapper = rnnoiseWrapper {
+                            applyRnnoise(wrapper: wrapper, frame: &frameScratch)
                         }
                     case .deepfilternet:
                         if let ctx = dfContext, dfFrameLength == frameLen {
@@ -152,8 +152,8 @@ internal final class AudioPipelineCore {
         if denoiseEnabled {
             switch activeModule {
             case .rnnoise:
-                if let ctx = rnnoiseContext {
-                    applyRnnoise(ctx: ctx, frame: &padded)
+                if let wrapper = rnnoiseWrapper {
+                    applyRnnoise(wrapper: wrapper, frame: &padded)
                 }
             case .deepfilternet:
                 if let ctx = dfContext, dfFrameLength == frameLen {
@@ -184,10 +184,7 @@ internal final class AudioPipelineCore {
     func release() {
         if released { return }
         released = true
-        if let ctx = rnnoiseContext {
-            rnnoise_destroy(ctx)
-            rnnoiseContext = nil
-        }
+        rnnoiseWrapper = nil
         if let ctx = dfContext {
             df_free(ctx)
             dfContext = nil
@@ -248,12 +245,13 @@ internal final class AudioPipelineCore {
     private static let int16ToFloat: Float = 1.0 / 32768.0
     private static let floatToInt16: Float = 32768.0
 
-    private func applyRnnoise(ctx: OpaquePointer, frame: inout [Float]) {
-        // RNNoise C API expects int16-scale floats: scale up, process, scale back.
+    private func applyRnnoise(wrapper: RNNoiseWrapper, frame: inout [Float]) {
+        // RNNoise wrapper expects int16-scale floats: scale up, process, scale back.
         let count = frame.count
         for i in 0..<count { frame[i] *= Self.floatToInt16 }
         frame.withUnsafeMutableBufferPointer { ptr in
-            _ = rnnoise_process_frame(ctx, ptr.baseAddress, ptr.baseAddress)
+            guard let baseAddress = ptr.baseAddress else { return }
+            _ = wrapper.processFrame(baseAddress, frameSize: Int32(count))
         }
         for i in 0..<count { frame[i] *= Self.int16ToFloat }
     }
@@ -285,8 +283,11 @@ internal final class AudioPipelineCore {
     // MARK: - Lifecycle helpers
 
     private func ensureRnnoise() {
-        guard rnnoiseContext == nil else { return }
-        rnnoiseContext = rnnoise_create(nil)
+        guard rnnoiseWrapper == nil else { return }
+        let wrapper = RNNoiseWrapper()
+        if wrapper.initialize(48000, numChannels: 1) {
+            rnnoiseWrapper = wrapper
+        }
     }
 
     private func ensureDeepFilter() {

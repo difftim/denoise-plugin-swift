@@ -79,6 +79,8 @@ __attribute__((visibility("default")))
                    frames:(int)frames
                bufferSize:(int)bufferSize
                    buffer:(float *)buffer;
+- (float)processFrame:(float *)frame frameSize:(int)frameSize;
+- (BOOL)reset;
 
 @end
 
