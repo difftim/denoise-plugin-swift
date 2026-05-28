@@ -29,3 +29,6 @@ release/*.zip
 .build
 Package.resolved
 .swiftpm
+# Xcode per-user state (xcuserdata) should never be tracked
+**/xcuserdata/
+**/*.xcuserstate

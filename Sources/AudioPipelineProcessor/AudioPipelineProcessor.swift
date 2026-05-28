@@ -9,7 +9,7 @@ public enum AudioModule: String {
     case deepfilternet
 }
 
-public struct SoundTouchConfig {
+public struct SoundTouchConfig: Sendable, Equatable {
     public var enabled: Bool
     public var pitchSemiTones: Float
 

@@ -12,12 +12,15 @@
 //  What it does
 //  ------------
 //  Captures one mic stream via AVAudioEngine, resamples to 48 kHz mono float32,
-//  and writes the PCM into two AVAudioFile instances in parallel:
-//   - `original-<ts>.m4a` — raw passthrough, never touches the SDK.
-//   - `processed-<ts>.m4a` — same PCM run through `OfflineAudioPipeline`
-//     (RNNoise denoise + optional voice changer at +4 semitones).
+//  and writes the PCM into three .m4a files in parallel using ONE
+//  multi-tap `OfflineAudioPipeline` (denoise inference runs once per chunk,
+//  fans out to N output taps):
+//   - `original-<ts>.m4a`  — raw passthrough, never touches the SDK.
+//   - `denoised-<ts>.m4a`  — tap "denoised":         denoise on, no voice changer.
+//   - `processed-<ts>.m4a` — tap "denoised+pitch":   denoise on + SoundTouch
+//                            at the selected pitch.
 //
-//  Buttons: Start / Stop / Cancel / Play original / Play processed.
+//  Buttons: Start / Stop / Cancel / Play original / Play denoised / Play processed.
 //
 
 import AVFoundation
@@ -44,8 +47,12 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     private var inputToProcessingConverter: AVAudioConverter?
 
+    /// Single multi-tap pipeline shared by all SDK-driven outputs. Tap ids:
+    ///   - `denoisedTapId`  → denoise only
+    ///   - `processedTapId` → denoise + SoundTouch (pitch from UI)
     private var pipeline: OfflineAudioPipeline?
-    private var denoiseOnlyPipeline: OfflineAudioPipeline?
+    private let denoisedTapId = "denoised"
+    private let processedTapId = "denoised+pitch"
     private var originalURL: URL?
     private var denoisedURL: URL?
     private var processedURL: URL?
@@ -319,25 +326,27 @@ public final class VoiceMsgDemoViewController: UIViewController {
         processedChunks.removeAll(keepingCapacity: true)
         tapFrameCount = 0
 
+        // ONE multi-tap pipeline replaces the prior pair of single-tap
+        // instances — denoise inference happens once per chunk and fans out
+        // to whichever taps consume the denoised PCM.
+        let voiceChangerEnabled = voiceChangerSwitch.isOn && selectedVoicePitch() != nil
+        let processedSoundTouch = SoundTouchConfig(
+            enabled: voiceChangerEnabled,
+            pitchSemiTones: selectedVoicePitch() ?? 0
+        )
         logDemo("pipeline init begin model=\(selectedDenoiseModule()) voicePitch=\(String(describing: selectedVoicePitch()))")
         let pipeline = OfflineAudioPipeline(
-            initialModule: selectedDenoiseModule(),
-            soundTouchConfig: SoundTouchConfig(
-                enabled: voiceChangerSwitch.isOn && selectedVoicePitch() != nil,
-                pitchSemiTones: selectedVoicePitch() ?? 0
-            ),
-            denoiseEnabled: denoiseSwitch.isOn
+            taps: [
+                (id: denoisedTapId,  config: PipelineTapConfig(denoise: denoiseSwitch.isOn)),
+                (id: processedTapId, config: PipelineTapConfig(
+                    denoise: denoiseSwitch.isOn,
+                    soundTouch: processedSoundTouch
+                )),
+            ],
+            initialModule: selectedDenoiseModule()
         )
         self.pipeline = pipeline
-        logDemo("pipeline init done")
-
-        let denoiseOnlyPipeline = OfflineAudioPipeline(
-            initialModule: selectedDenoiseModule(),
-            soundTouchConfig: SoundTouchConfig(enabled: false, pitchSemiTones: 0),
-            denoiseEnabled: denoiseSwitch.isOn
-        )
-        self.denoiseOnlyPipeline = denoiseOnlyPipeline
-        logDemo("denoise-only pipeline init done")
+        logDemo("pipeline init done (multi-tap, ids=\(pipeline.tapIds))")
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -356,7 +365,6 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
     private func handleTap(buffer: AVAudioPCMBuffer) {
         guard let pipeline = pipeline,
-              let denoiseOnlyPipeline = denoiseOnlyPipeline,
               let converter = inputToProcessingConverter else {
             return
         }
@@ -385,19 +393,17 @@ public final class VoiceMsgDemoViewController: UIViewController {
         guard let chPtr = monoBuffer.floatChannelData?[0] else { return }
         let inputArray = Array(UnsafeBufferPointer(start: chPtr, count: Int(monoBuffer.frameLength)))
 
-        // Branch A: keep original PCM. Encoding happens after Stop, outside the audio callback.
+        // Raw passthrough never touches the SDK. Encoding deferred to Stop.
         originalChunks.append(inputArray)
 
-        // Branch B: denoise-only candidate, useful when voice changer is enabled.
-        let denoised = denoiseOnlyPipeline.process(inputArray)
-        if !denoised.isEmpty {
-            denoisedChunks.append(denoised)
+        // Single multi-tap call → both denoised and denoised+pitch outputs in
+        // one shared denoise inference pass.
+        let outs = pipeline.processTaps(inputArray)
+        if let d = outs[denoisedTapId], !d.isEmpty {
+            denoisedChunks.append(d)
         }
-
-        // Branch C: final processed candidate. Encoding happens after Stop.
-        let processed = pipeline.process(inputArray)
-        if !processed.isEmpty {
-            processedChunks.append(processed)
+        if let p = outs[processedTapId], !p.isEmpty {
+            processedChunks.append(p)
         }
     }
 
@@ -440,14 +446,12 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
         if !deleteFiles, let pipeline = pipeline {
             logDemo("flush begin")
-            if let denoiseOnlyPipeline {
-                let denoisedTail = denoiseOnlyPipeline.flush()
-                logDemo("denoise-only flush done tailSamples=\(denoisedTail.count)")
-                if !denoisedTail.isEmpty { denoisedChunks.append(denoisedTail) }
-            }
-            let tail = pipeline.flush()
-            logDemo("flush done tailSamples=\(tail.count)")
-            if !tail.isEmpty { processedChunks.append(tail) }
+            let tails = pipeline.flushTaps()
+            let denoisedTail  = tails[denoisedTapId]  ?? []
+            let processedTail = tails[processedTapId] ?? []
+            logDemo("flushTaps done denoisedTail=\(denoisedTail.count) processedTail=\(processedTail.count)")
+            if !denoisedTail.isEmpty  { denoisedChunks.append(denoisedTail) }
+            if !processedTail.isEmpty { processedChunks.append(processedTail) }
             do {
                 if let originalURL { try writeChunks(originalChunks, to: originalURL) }
                 if let denoisedURL { try writeChunks(denoisedChunks, to: denoisedURL) }
@@ -466,8 +470,6 @@ public final class VoiceMsgDemoViewController: UIViewController {
 
         pipeline?.release()
         pipeline = nil
-        denoiseOnlyPipeline?.release()
-        denoiseOnlyPipeline = nil
         inputToProcessingConverter = nil
         originalChunks.removeAll(keepingCapacity: true)
         denoisedChunks.removeAll(keepingCapacity: true)
