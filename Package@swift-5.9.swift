@@ -20,7 +20,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/difftim/client-sdk-swift.git", from: "2.12.1"),
+        .package(url: "https://github.com/difftim/client-sdk-swift.git", from: "2.10.2-a9"),
     ],
     targets: [
         .binaryTarget(
@@ -28,8 +28,8 @@ let package = Package(
             // path: "libs_audio_pipeline/AudioPipeline.xcframework"
 
             // for remote release:
-            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.15/AudioPipeline.xcframework.zip",
-            checksum: "3f5cd7fc0bfd5e6e4cd7c3d3fd582dc650130ec8c1cca1b8b47ffaea53ff258d"
+            url: "https://github.com/difftim/denoise-plugin-swift/releases/download/1.0.16/AudioPipeline.xcframework.zip",
+            checksum: "9bfc616cf4d8ff1ec88c0aad8b3a1eda2b3f0c364eac7c472ab719c1ce62733c"
         ),
         .target(
             name: "AudioPipelineProcessor",
