@@ -636,8 +636,10 @@ compress_xcframework() {
     # 会变成真实目录，codesign 会失败，体积也会膨胀几倍）
     zip -ry "$ZIP_OUTPUT" AudioPipeline.xcframework
 
+    # SPM 的 checksum 就是 zip 的 SHA-256。不用 `swift package compute-checksum`：
+    # swiftly 的 swift 会读到本仓库的 .swift-version（"5.7 # Xcode 14"）并报格式错误。
     local CHECKSUM
-    CHECKSUM=$(swift package compute-checksum "$ZIP_OUTPUT")
+    CHECKSUM=$(shasum -a 256 "$ZIP_OUTPUT" | cut -d' ' -f1)
     echo "Checksum: $CHECKSUM"
     echo "压缩完成: $ZIP_OUTPUT"
 
