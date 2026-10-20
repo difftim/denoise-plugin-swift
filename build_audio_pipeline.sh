@@ -6,6 +6,8 @@ RNNOISE_DIR="$(cd "$SCRIPT_DIR/../rnnoise" && pwd)"
 DF_DIR="$(cd "$SCRIPT_DIR/../DeepFilterNet/libDF" && pwd)"
 SOUNDTOUCH_DIR="$(cd "$SCRIPT_DIR/../soundtouch" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/libs_audio_pipeline"
+# RNNoise 在这份副本里生成 autotools 文件和解压模型，不写 ../rnnoise
+RNNOISE_SRC="$OUTPUT_DIR/src/rnnoise"
 RELEASE_DIR="$SCRIPT_DIR/release"
 HEADER_DIR="$OUTPUT_DIR/headers"
 VERSION=$(cat "$SCRIPT_DIR/VERSION" | tr -d '[:space:]')
@@ -120,48 +122,22 @@ rust_flags_for_platform() {
     esac
 }
 
-patch_rnnoise_objc_wrapper() {
-    python3 - <<PY
-from pathlib import Path
+prepare_rnnoise_source() {
+    echo "============================"
+    echo "准备 RNNoise 源码副本: $RNNOISE_SRC"
+    echo "============================"
 
-root = Path("$RNNOISE_DIR")
-header = root / "include" / "RNNoiseObjC.h"
-impl = root / "src" / "RNNoiseObjC.m"
+    rm -rf "$RNNOISE_SRC"
+    mkdir -p "$RNNOISE_SRC"
+    # 只复制受 git 跟踪的文件（含未提交的修改），不带上其它构建留在 ../rnnoise 里的产物
+    (cd "$RNNOISE_DIR" && git ls-files -z | tar --null -T - -cf -) | tar -xpf - -C "$RNNOISE_SRC"
 
-header_text = header.read_text()
-if "processFrame:(float *)frame frameSize:(int)frameSize" not in header_text:
-    header_text = header_text.replace(
-        "- (float)processWithBands:(int)bands\\n"
-        "                   frames:(int)frames\\n"
-        "               bufferSize:(int)bufferSize\\n"
-        "                   buffer:(float *)buffer;\\n",
-        "- (float)processWithBands:(int)bands\\n"
-        "                   frames:(int)frames\\n"
-        "               bufferSize:(int)bufferSize\\n"
-        "                   buffer:(float *)buffer;\\n"
-        "- (float)processFrame:(float *)frame frameSize:(int)frameSize;\\n"
-        "- (BOOL)reset;\\n",
-    )
-    header.write_text(header_text)
+    # configure.ac 用 update_version 跑 git describe 取版本；副本在本仓库里，
+    # 固定成在 ../rnnoise 原地构建时得到的 "unknown"，不读本仓库的 tag
+    printf 'AUTO_UPDATE=no\nPACKAGE_VERSION="unknown"\n' > "$RNNOISE_SRC/package_version"
 
-impl_text = impl.read_text()
-if "processFrame:(float *)frame frameSize:(int)frameSize" not in impl_text:
-    impl_text = impl_text.replace(
-        "- (void)uninitialize {\\n",
-        "- (float)processFrame:(float *)frame frameSize:(int)frameSize {\\n"
-        "    if (!_denoiseState || !frame || frameSize != rnnoise_get_frame_size()) {\\n"
-        "        return .0f;\\n"
-        "    }\\n\\n"
-        "    return rnnoise_process_frame(_denoiseState, frame, frame);\\n"
-        "}\\n\\n"
-        "- (BOOL)reset {\\n"
-        "    [self uninitialize];\\n"
-        "    return [self initialize:_supportSampleRateHz numChannels:_supportNumChannels];\\n"
-        "}\\n\\n"
-        "- (void)uninitialize {\\n",
-    )
-    impl.write_text(impl_text)
-PY
+    # 解压模型数据并执行 autoreconf，所有 target 共用
+    "$RNNOISE_SRC/autogen.sh"
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -192,23 +168,14 @@ build_rnnoise_static() {
 
     export CC
     export CXX
-    export CFLAGS="-arch $ARCH -isysroot $SYSROOT -I$RNNOISE_DIR/include -DRNNOISE_EXPORT= $VERSION_FLAG -O3 -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions"
+    export CFLAGS="-arch $ARCH -isysroot $SYSROOT -I$RNNOISE_SRC/include -DRNNOISE_EXPORT= $VERSION_FLAG -O3 -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions"
     export OBJCFLAGS="$CFLAGS -fobjc-arc"
     export LDFLAGS="-arch $ARCH -isysroot $SYSROOT $VERSION_FLAG"
-
-    # 清理 rnnoise 源码目录
-    cd "$RNNOISE_DIR"
-    git checkout -- . 2>/dev/null || true
-    git clean -fd . 2>/dev/null || true
-    patch_rnnoise_objc_wrapper
-
-    # 运行 autogen（会解压模型数据并执行 autoreconf）
-    ./autogen.sh
 
     cd "$BUILD_DIR"
 
     # configure: 启用 framework（让 ObjC wrapper 参与编译），同时启用静态库
-    "$RNNOISE_DIR/configure" \
+    "$RNNOISE_SRC/configure" \
         --host="$ARCH-apple-darwin" \
         --enable-static \
         --enable-shared \
@@ -251,12 +218,6 @@ build_rnnoise_static() {
     cd "$SCRIPT_DIR"
     rm -rf "$BUILD_DIR"
 
-    # 恢复 rnnoise 源码
-    cd "$RNNOISE_DIR"
-    git checkout -- . 2>/dev/null || true
-    git clean -fd . 2>/dev/null || true
-    cd "$SCRIPT_DIR"
-
     echo "完成: $LIB_DIR/librnnoise.a"
 }
 
@@ -276,15 +237,6 @@ build_deepfilter_static() {
 
     local RUSTFLAGS
     RUSTFLAGS=$(rust_flags_for_platform "$PLATFORM")
-
-    # 限制 crate-type 为 staticlib，减少不必要的编译产物
-    local CARGO_TOML="$DF_DIR/Cargo.toml"
-    local CARGO_TOML_BAK="$CARGO_TOML.bak"
-    if [ ! -f "$CARGO_TOML_BAK" ]; then
-        cp "$CARGO_TOML" "$CARGO_TOML_BAK"
-        sed -i '' 's/crate-type = \["cdylib", "rlib", "staticlib"\]/crate-type = ["staticlib"]/' "$CARGO_TOML"
-        trap '[ -f "$CARGO_TOML_BAK" ] && mv "$CARGO_TOML_BAK" "$CARGO_TOML"' EXIT
-    fi
 
     # 设置 Apple 标准部署环境变量，让 cc crate 和 tract-linalg build script 使用正确的 SDK 和最低版本
     local SAVED_SDKROOT="${SDKROOT:-}"
@@ -309,14 +261,20 @@ build_deepfilter_static() {
             ;;
     esac
 
+    # 只要 staticlib：用 cargo rustc --crate-type 覆盖 Cargo.toml 里的
+    # ["cdylib", "rlib", "staticlib"]，不改 Cargo.toml。产出的 libdf.a 与把
+    # Cargo.toml 改成 staticlib-only 后 cargo build 的结果逐字节相同。
+    # --locked：按已提交的 DeepFilterNet/Cargo.lock 构建，与 Android、Web 一致。
     cd "$DF_DIR"
     CARGO_TARGET_DIR="$DF_DIR/../target" \
     CARGO_ENCODED_RUSTFLAGS="$RUSTFLAGS" \
-    cargo build \
+    cargo rustc \
         --target "$RUST_TARGET" \
         --profile release-lto \
         --lib \
-        --features "capi,default-model"
+        --features "capi,default-model" \
+        --crate-type staticlib \
+        --locked
 
     # 恢复环境变量
     if [ -n "$SAVED_SDKROOT" ]; then export SDKROOT="$SAVED_SDKROOT"; else unset SDKROOT; fi
@@ -676,6 +634,7 @@ cleanup_intermediates() {
 # ═══════════════════════════════════════════════════════════════════
 
 # 1) 编译 RNNoise
+prepare_rnnoise_source
 for ((i=0; i<${#PLATFORMS[@]}; i++)); do
     PLATFORM="${PLATFORMS[i]}"
     ARCH_LIST="${C_ARCHS[i]}"
@@ -698,13 +657,6 @@ for ((i=0; i<${#PLATFORMS[@]}; i++)); do
         build_deepfilter_static "$RUST_TARGET" "$PLATFORM"
     done
 done
-
-# 恢复 DeepFilterNet 的 Cargo.toml
-CARGO_TOML_BAK="$DF_DIR/Cargo.toml.bak"
-if [ -f "$CARGO_TOML_BAK" ]; then
-    mv "$CARGO_TOML_BAK" "$DF_DIR/Cargo.toml"
-fi
-trap - EXIT
 
 # 3) 编译 SoundTouch
 for ((i=0; i<${#PLATFORMS[@]}; i++)); do
